@@ -2,7 +2,9 @@ package com.jpmc.midascore.component;
 
 import com.jpmc.midascore.entity.TransactionRecord;
 import com.jpmc.midascore.entity.UserRecord;
+import com.jpmc.midascore.foundation.Incentive;
 import com.jpmc.midascore.foundation.Transaction;
+import com.jpmc.midascore.config.IncentiveApiConfig;
 import com.jpmc.midascore.repository.TransactionRecordRepository;
 import com.jpmc.midascore.repository.UserRepository;
 import org.slf4j.Logger;
@@ -11,6 +13,7 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.kafka.annotation.KafkaListener;
 import org.springframework.stereotype.Component;
 import org.springframework.transaction.annotation.Transactional;
+import org.springframework.web.client.RestTemplate;
 
 @Component
 public class TransactionListener {
@@ -21,6 +24,12 @@ public class TransactionListener {
 
     @Autowired
     private TransactionRecordRepository transactionRecordRepository;
+
+    @Autowired
+    private RestTemplate restTemplate;
+
+    @Autowired
+    private IncentiveApiConfig incentiveApiConfig;
 
     @KafkaListener(topics = "${general.kafka-topic}")
     @Transactional
@@ -70,13 +79,28 @@ public class TransactionListener {
         // Get sender and recipient
         UserRecord sender = userRepository.findById(transaction.getSenderId());
         UserRecord recipient = userRepository.findById(transaction.getRecipientId());
+        
+        // Call incentive API
+        float incentiveAmount = 0.0f;
+        try {
+            Incentive incentive = restTemplate.postForObject(
+                incentiveApiConfig.getIncentiveEndpoint(),
+                transaction,
+                Incentive.class
+            );
+            if (incentive != null && incentive.getAmount() >= 0) {
+                incentiveAmount = incentive.getAmount();
+            }
+        } catch (Exception e) {
+            logger.warn("Incentive API call failed, defaulting incentive to 0 for transaction {}", transaction, e);
+        }
 
-        // Create transaction record
-        TransactionRecord transactionRecord = new TransactionRecord(sender, recipient, transaction.getAmount());
+        // Create transaction record with incentive
+        TransactionRecord transactionRecord = new TransactionRecord(sender, recipient, transaction.getAmount(), incentiveAmount);
 
         // Update balances
         sender.setBalance(sender.getBalance() - transaction.getAmount());
-        recipient.setBalance(recipient.getBalance() + transaction.getAmount());
+        recipient.setBalance(recipient.getBalance() + transaction.getAmount() + incentiveAmount);
 
         // Save entities
         userRepository.save(sender);
